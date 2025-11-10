@@ -7,7 +7,11 @@
       "WebFetch(domain:adrg.se)",
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(cargo publish:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cargo package:*)"
     ],
     "deny": [],
     "ask": []
