@@ -19,6 +19,19 @@ enum Commands {
     Update,
     /// Upgrade outdated packages in parallel
     Upgrade,
+    /// Install packages in parallel
+    Install {
+        /// List of packages to install
+        packages: Vec<String>,
+    },
+    /// Reinstall packages in parallel
+    Reinstall {
+        /// Reinstall all installed packages
+        #[arg(short, long)]
+        all: bool,
+        /// List of packages to reinstall (ignored if --all is specified)
+        packages: Vec<String>,
+    },
 }
 
 /// Represents outdated formulae from `brew outdated --json`
@@ -64,11 +77,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
         .context(format!("Failed to execute: {} {}", cmd, args.join(" ")))?;
 
     if !status.success() {
-        return Err(anyhow!(
-            "Command failed: {} {}",
-            cmd,
-            args.join(" ")
-        ));
+        return Err(anyhow!("Command failed: {} {}", cmd, args.join(" ")));
     }
 
     Ok(())
@@ -101,6 +110,32 @@ async fn get_outdated_packages() -> Result<Vec<String>> {
     Ok(packages)
 }
 
+/// Get list of installed packages from Homebrew (formulae only, not casks)
+async fn get_installed_packages() -> Result<Vec<String>> {
+    println!("Getting list of installed packages...");
+
+    let output = Command::new("brew")
+        .args(["list", "--formula", "-1"])
+        .output()
+        .await
+        .context("Failed to execute 'brew list --formula -1'")?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Failed to get installed packages: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let packages: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    Ok(packages)
+}
+
 /// Fetch a single package in the background
 async fn fetch_package(package: &str) -> Result<()> {
     let output = Command::new("brew")
@@ -115,6 +150,40 @@ async fn fetch_package(package: &str) -> Result<()> {
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);
         Err(anyhow!("Failed to fetch {}: {}", package, error_msg))
+    }
+}
+
+/// Install a single package
+async fn install_package(package: &str) -> Result<()> {
+    let output = Command::new("brew")
+        .args(["install", package])
+        .output()
+        .await
+        .context(format!("Failed to install package: {}", package))?;
+
+    if output.status.success() {
+        println!("✓ Installed: {}", package);
+        Ok(())
+    } else {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow!("Failed to install {}: {}", package, error_msg))
+    }
+}
+
+/// Reinstall a single package
+async fn reinstall_package(package: &str) -> Result<()> {
+    let output = Command::new("brew")
+        .args(["reinstall", package])
+        .output()
+        .await
+        .context(format!("Failed to reinstall package: {}", package))?;
+
+    if output.status.success() {
+        println!("✓ Reinstalled: {}", package);
+        Ok(())
+    } else {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow!("Failed to reinstall {}: {}", package, error_msg))
     }
 }
 
@@ -193,6 +262,133 @@ async fn upgrade() -> Result<()> {
     Ok(())
 }
 
+/// Parallel install command - installs packages in parallel
+async fn install(packages: Vec<String>) -> Result<()> {
+    println!("=== Better Brew Install ===\n");
+
+    check_homebrew().await?;
+
+    if packages.is_empty() {
+        return Err(anyhow!("No packages specified to install"));
+    }
+
+    println!(
+        "Installing {} package(s): {}\n",
+        packages.len(),
+        packages.join(", ")
+    );
+
+    // Install all packages in parallel
+    println!("Installing packages in parallel...");
+    let install_tasks: Vec<_> = packages
+        .iter()
+        .map(|package| install_package(package))
+        .collect();
+
+    // Wait for all installs to complete
+    let results = futures::future::join_all(install_tasks).await;
+
+    // Check for any failures
+    let mut failed = Vec::new();
+    let mut succeeded = Vec::new();
+    for (i, result) in results.iter().enumerate() {
+        if let Err(e) = result {
+            eprintln!("✗ Error: {}", e);
+            failed.push(&packages[i]);
+        } else {
+            succeeded.push(&packages[i]);
+        }
+    }
+
+    println!();
+    if !succeeded.is_empty() {
+        println!("✓ Successfully installed {} package(s)", succeeded.len());
+    }
+
+    if !failed.is_empty() {
+        let failed_names: Vec<&str> = failed.iter().map(|s| s.as_str()).collect();
+        eprintln!(
+            "✗ {} package(s) failed to install: {}",
+            failed.len(),
+            failed_names.join(", ")
+        );
+        return Err(anyhow!("Some packages failed to install"));
+    }
+
+    println!("\n✓ Install complete!");
+    Ok(())
+}
+
+/// Parallel reinstall command - reinstalls packages in parallel
+async fn reinstall(all: bool, packages: Vec<String>) -> Result<()> {
+    println!("=== Better Brew Reinstall ===\n");
+
+    check_homebrew().await?;
+
+    let packages_to_reinstall = if all {
+        println!("Reinstalling ALL installed packages...\n");
+        get_installed_packages().await?
+    } else {
+        if packages.is_empty() {
+            return Err(anyhow!(
+                "No packages specified to reinstall. Use --all to reinstall all packages"
+            ));
+        }
+        packages
+    };
+
+    if packages_to_reinstall.is_empty() {
+        println!("✓ No packages to reinstall!");
+        return Ok(());
+    }
+
+    println!(
+        "Reinstalling {} package(s): {}\n",
+        packages_to_reinstall.len(),
+        packages_to_reinstall.join(", ")
+    );
+
+    // Reinstall all packages in parallel
+    println!("Reinstalling packages in parallel...");
+    let reinstall_tasks: Vec<_> = packages_to_reinstall
+        .iter()
+        .map(|package| reinstall_package(package))
+        .collect();
+
+    // Wait for all reinstalls to complete
+    let results = futures::future::join_all(reinstall_tasks).await;
+
+    // Check for any failures
+    let mut failed = Vec::new();
+    let mut succeeded = Vec::new();
+    for (i, result) in results.iter().enumerate() {
+        if let Err(e) = result {
+            eprintln!("✗ Error: {}", e);
+            failed.push(&packages_to_reinstall[i]);
+        } else {
+            succeeded.push(&packages_to_reinstall[i]);
+        }
+    }
+
+    println!();
+    if !succeeded.is_empty() {
+        println!("✓ Successfully reinstalled {} package(s)", succeeded.len());
+    }
+
+    if !failed.is_empty() {
+        let failed_names: Vec<&str> = failed.iter().map(|s| s.as_str()).collect();
+        eprintln!(
+            "✗ {} package(s) failed to reinstall: {}",
+            failed.len(),
+            failed_names.join(", ")
+        );
+        return Err(anyhow!("Some packages failed to reinstall"));
+    }
+
+    println!("\n✓ Reinstall complete!");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -200,6 +396,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Update => update().await,
         Commands::Upgrade => upgrade().await,
+        Commands::Install { packages } => install(packages).await,
+        Commands::Reinstall { all, packages } => reinstall(all, packages).await,
     }
 }
 
