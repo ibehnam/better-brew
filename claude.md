@@ -61,7 +61,7 @@
 ```toml
 [package]
 name = "better_brew"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.70"
 
@@ -73,6 +73,7 @@ serde_json = "1.0"
 anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 futures = "0.3"
+indicatif = "0.17"  # Progress bars for better UX
 
 [dev-dependencies]
 proptest = "1.4"
@@ -607,9 +608,9 @@ jobs:
 ## Project-Specific Notes: Better Brew
 
 ### Project Overview
-**Better Brew** (`bbrew`) is a parallel Homebrew package manager that speeds up package operations by executing them concurrently.
+**Better Brew** (`bbrew`) is a parallel Homebrew package manager that speeds up package operations by executing them concurrently with intelligent concurrency limiting and real-time progress feedback.
 
-**Current Version**: 0.2.0
+**Current Version**: 0.3.0
 **Binary Name**: `bbrew`
 **Published**: crates.io
 **Repository**: https://github.com/ibehnam/better_brew
@@ -623,6 +624,8 @@ jobs:
 2. **Async Runtime**: Tokio multi-threaded runtime for concurrent operations
 3. **Package Management**: Wrapper functions around `brew` commands
 4. **Parallel Execution**: `futures::join_all` for concurrent package operations
+5. **Concurrency Control**: Semaphore-based limiting (max 4 concurrent ops) to prevent CPU overload
+6. **Progress Tracking**: Real-time progress bars with ETA using indicatif
 
 ### Available Commands
 
@@ -630,10 +633,10 @@ jobs:
 # Update Homebrew definitions
 bbrew update
 
-# Upgrade outdated packages (with parallel download)
+# Upgrade outdated packages (with parallel download + progress bars)
 bbrew upgrade
 
-# Install packages in parallel (v0.2.0+)
+# Install packages in parallel with progress tracking (v0.2.0+)
 bbrew install wget curl jq ripgrep
 
 # Reinstall specific packages in parallel (v0.2.0+)
@@ -643,19 +646,40 @@ bbrew reinstall node python
 bbrew reinstall --all
 ```
 
+**v0.3.0 Features**:
+- Visual progress bars with real-time ETA
+- Concurrency limiting (max 4 concurrent operations) to prevent CPU overload
+- Better system resource management
+
 ### Parallel Execution Pattern
 
-All package operations use the same concurrency pattern:
+All package operations use the same concurrency-limited pattern with progress tracking:
 
 ```rust
-// Example: Parallel package installation
+// Example: Parallel package installation with concurrency control
+const MAX_CONCURRENT_OPERATIONS: usize = 4;
+
+// Create semaphore for concurrency limiting
+let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_OPERATIONS));
+
+// Create progress bar
+let pb = ProgressBar::new(packages.len() as u64);
+pb.set_style(
+    ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+        .unwrap()
+        .progress_chars("#>-")
+);
+
+// Spawn tasks with semaphore and progress bar
 let install_tasks: Vec<_> = packages
     .iter()
-    .map(|package| install_package(package))
+    .map(|package| install_package(package, semaphore.clone(), pb.clone()))
     .collect();
 
 // Wait for all installs to complete
 let results = futures::future::join_all(install_tasks).await;
+pb.finish_with_message("Installation complete");
 
 // Check for any failures
 for (i, result) in results.iter().enumerate() {
@@ -663,6 +687,22 @@ for (i, result) in results.iter().enumerate() {
         eprintln!("✗ Error: {}", e);
         failed.push(&packages[i]);
     }
+}
+```
+
+Each package operation function acquires a permit from the semaphore:
+
+```rust
+async fn install_package(package: &str, semaphore: Arc<Semaphore>, pb: ProgressBar) -> Result<()> {
+    let _permit = semaphore.acquire().await.unwrap();  // Limits concurrency
+
+    pb.set_message(format!("Installing {}", package));
+
+    // Perform installation...
+
+    pb.println(format!("✓ Installed: {}", package));
+    pb.inc(1);
+    Ok(())
 }
 ```
 
@@ -676,12 +716,18 @@ brew install package3  # Wait for download + install
 Total time: Sum of all operations
 ```
 
-**Better Brew Parallel Approach**:
+**Better Brew Parallel Approach (v0.3.0)**:
 ```
-All packages download simultaneously
-Install in parallel (where safe)
-Total time: Longest single operation + overhead
+Up to 4 packages download/install simultaneously
+Real-time progress tracking
+Prevents CPU overload while maintaining speed
+Total time: ~Longest single operation × (total_packages ÷ 4) + overhead
 ```
+
+**Key Improvements in v0.3.0**:
+- Concurrency limiting prevents system slowdown from too many brew processes
+- Visual feedback shows progress and estimated completion time
+- Balanced approach: fast operations without overwhelming the system
 
 ### Command Examples
 
@@ -705,12 +751,25 @@ bbrew reinstall $(brew list | grep python)
 - Individual package failures don't halt overall operation
 - Failed packages are collected and reported at the end
 - Clear success/failure indicators (✓/✗) for each package
+- Progress bar updates even on failures
+
+**Concurrency Control (v0.3.0)**:
+- Semaphore limits concurrent operations to 4 (configurable via `MAX_CONCURRENT_OPERATIONS`)
+- Prevents CPU overload from too many simultaneous brew/ruby processes
+- Each operation acquires a permit before starting, releases on completion
+- Maintains parallel benefits while being system-friendly
+
+**Progress Tracking (v0.3.0)**:
+- Real-time progress bars using indicatif library
+- Shows: spinner, elapsed time, progress bar, completion ratio, ETA, current operation
+- `pb.println()` ensures status messages don't interfere with progress bar
+- Progress bar auto-finishes with completion message
 
 **Brew Integration**:
 - `update`: Runs `brew update` directly
-- `upgrade`: Fetches packages in parallel, then runs `brew upgrade`
-- `install`: Runs `brew install` for each package concurrently
-- `reinstall`: Runs `brew reinstall` for each package concurrently
+- `upgrade`: Fetches packages in parallel (limited), then runs `brew upgrade`
+- `install`: Runs `brew install` for each package concurrently (limited)
+- `reinstall`: Runs `brew reinstall` for each package concurrently (limited)
 
 **Package Discovery**:
 - Outdated packages: `brew outdated --json` (parsed via serde)
@@ -731,19 +790,24 @@ cargo run --release -- install wget
 # Publishing updates
 # 1. Update version in Cargo.toml
 # 2. Commit changes
-# 3. Create git tag (e.g., v0.2.0)
+# 3. Create git tag (e.g., v0.3.0)
 # 4. cargo publish
 ```
 
 ### Future Enhancements
 
-Potential areas for improvement:
+**Implemented in v0.3.0**:
+- ✅ Configurable concurrency limits (via `MAX_CONCURRENT_OPERATIONS` constant)
+- ✅ Progress bars for long-running operations
+
+**Potential areas for future improvement**:
 - Support for cask operations (currently formulae only)
-- Configurable concurrency limits
-- Progress bars for long-running operations
-- Dry-run mode
+- CLI flag to adjust concurrency limit (e.g., `--jobs 8`)
+- Dry-run mode (preview what would be installed/upgraded)
 - Package dependency graph analysis
 - Integration with `brew bundle`
+- Retry logic for failed operations
+- Download speed and bandwidth usage display
 
 ### Testing Considerations
 
@@ -767,9 +831,13 @@ fn test_package_parsing() {
 ### Performance Notes
 
 - **I/O-Bound**: Package downloads are network-limited, perfect for async
-- **CPU Usage**: Minimal - mostly waiting on network and disk I/O
+- **CPU Usage**: Controlled via concurrency limiting (max 4 brew processes)
+  - v0.2.0 and earlier: Could spawn unlimited brew/ruby processes → CPU overload
+  - v0.3.0+: Maximum 4 concurrent operations → balanced performance
 - **Memory**: Lightweight - only stores package lists and results
 - **Tokio Runtime**: Default worker thread count (# of CPU cores)
+- **System Impact**: Semaphore prevents overwhelming the system with too many brew processes
+- **Network Efficiency**: 4 concurrent downloads provide good throughput without hitting rate limits
 
 ### Security Considerations
 
