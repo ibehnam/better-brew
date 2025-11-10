@@ -11,6 +11,7 @@ homepage = "https://github.com/ibehnam/better_brew"
 keywords = ["homebrew", "cli", "package-manager", "parallel", "macos"]
 categories = ["command-line-utilities"]
 readme = "README.md"
+exclude = ["target/", ".claude/", ".git/", ".gitignore"]
 
 [[bin]]
 name = "bbrew"
