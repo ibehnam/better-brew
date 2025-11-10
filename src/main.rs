@@ -166,55 +166,71 @@ async fn fetch_package(package: &str, semaphore: Arc<Semaphore>, pb: ProgressBar
     }
 }
 
-/// Install a single package
-async fn install_package(package: &str, semaphore: Arc<Semaphore>, pb: ProgressBar) -> Result<()> {
+/// Install a batch of packages in a single brew command
+async fn install_package_batch(
+    packages: Vec<String>,
+    semaphore: Arc<Semaphore>,
+    pb: ProgressBar,
+) -> Result<Vec<String>> {
     let _permit = semaphore.acquire().await.unwrap();
 
-    pb.set_message(format!("Installing {}", package));
+    let batch_str = packages.join(", ");
+    pb.set_message(format!("Installing batch: {}", batch_str));
+
+    let mut args = vec!["install"];
+    args.extend(packages.iter().map(|s| s.as_str()));
 
     let output = Command::new("brew")
-        .args(["install", package])
+        .args(&args)
         .output()
         .await
-        .context(format!("Failed to install package: {}", package))?;
+        .context(format!("Failed to install batch: {}", batch_str))?;
 
     if output.status.success() {
-        pb.println(format!("✓ Installed: {}", package));
-        pb.inc(1);
-        Ok(())
+        for package in &packages {
+            pb.println(format!("✓ Installed: {}", package));
+        }
+        pb.inc(packages.len() as u64);
+        Ok(vec![])
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);
-        pb.println(format!("✗ Failed to install: {}", package));
-        pb.inc(1);
-        Err(anyhow!("Failed to install {}: {}", package, error_msg))
+        pb.println(format!("✗ Batch failed: {}", error_msg.trim()));
+        pb.inc(packages.len() as u64);
+        Ok(packages) // Return failed packages
     }
 }
 
-/// Reinstall a single package
-async fn reinstall_package(
-    package: &str,
+/// Reinstall a batch of packages in a single brew command
+async fn reinstall_package_batch(
+    packages: Vec<String>,
     semaphore: Arc<Semaphore>,
     pb: ProgressBar,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let _permit = semaphore.acquire().await.unwrap();
 
-    pb.set_message(format!("Reinstalling {}", package));
+    let batch_str = packages.join(", ");
+    pb.set_message(format!("Reinstalling batch: {}", batch_str));
+
+    let mut args = vec!["reinstall"];
+    args.extend(packages.iter().map(|s| s.as_str()));
 
     let output = Command::new("brew")
-        .args(["reinstall", package])
+        .args(&args)
         .output()
         .await
-        .context(format!("Failed to reinstall package: {}", package))?;
+        .context(format!("Failed to reinstall batch: {}", batch_str))?;
 
     if output.status.success() {
-        pb.println(format!("✓ Reinstalled: {}", package));
-        pb.inc(1);
-        Ok(())
+        for package in &packages {
+            pb.println(format!("✓ Reinstalled: {}", package));
+        }
+        pb.inc(packages.len() as u64);
+        Ok(vec![])
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);
-        pb.println(format!("✗ Failed to reinstall: {}", package));
-        pb.inc(1);
-        Err(anyhow!("Failed to reinstall {}: {}", package, error_msg))
+        pb.println(format!("✗ Batch failed: {}", error_msg.trim()));
+        pb.inc(packages.len() as u64);
+        Ok(packages) // Return failed packages
     }
 }
 
@@ -318,14 +334,21 @@ async fn install(packages: Vec<String>) -> Result<()> {
     }
 
     println!(
-        "Installing {} package(s): {}\n",
-        packages.len(),
-        packages.join(", ")
+        "Installing {} package(s)\n",
+        packages.len()
     );
 
-    // Install all packages in parallel (with concurrency limit)
+    // Batch packages to reduce lock contention while maintaining parallelism
+    // Each batch runs `brew install pkg1 pkg2 pkg3...` which Homebrew handles efficiently
+    const BATCH_SIZE: usize = 10;
+    let batches: Vec<Vec<String>> = packages
+        .chunks(BATCH_SIZE)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
     println!(
-        "Installing packages with {} concurrent operations...",
+        "Installing in {} batch(es) with {} concurrent operations...",
+        batches.len(),
         MAX_CONCURRENT_OPERATIONS
     );
 
@@ -338,38 +361,36 @@ async fn install(packages: Vec<String>) -> Result<()> {
             .progress_chars("#>-")
     );
 
-    let install_tasks: Vec<_> = packages
-        .iter()
-        .map(|package| install_package(package, semaphore.clone(), pb.clone()))
+    let install_tasks: Vec<_> = batches
+        .into_iter()
+        .map(|batch| install_package_batch(batch, semaphore.clone(), pb.clone()))
         .collect();
 
     // Wait for all installs to complete
     let results = futures::future::join_all(install_tasks).await;
     pb.finish_with_message("Installation complete");
 
-    // Check for any failures
+    // Collect failed packages
     let mut failed = Vec::new();
-    let mut succeeded = Vec::new();
-    for (i, result) in results.iter().enumerate() {
-        if let Err(e) = result {
-            eprintln!("✗ Error: {}", e);
-            failed.push(&packages[i]);
-        } else {
-            succeeded.push(&packages[i]);
+    for result in results {
+        match result {
+            Ok(failed_packages) => failed.extend(failed_packages),
+            Err(e) => eprintln!("✗ Error: {}", e),
         }
     }
 
+    let succeeded = packages.len() - failed.len();
+
     println!();
-    if !succeeded.is_empty() {
-        println!("✓ Successfully installed {} package(s)", succeeded.len());
+    if succeeded > 0 {
+        println!("✓ Successfully installed {} package(s)", succeeded);
     }
 
     if !failed.is_empty() {
-        let failed_names: Vec<&str> = failed.iter().map(|s| s.as_str()).collect();
         eprintln!(
             "✗ {} package(s) failed to install: {}",
             failed.len(),
-            failed_names.join(", ")
+            failed.join(", ")
         );
         return Err(anyhow!("Some packages failed to install"));
     }
@@ -402,14 +423,21 @@ async fn reinstall(all: bool, packages: Vec<String>) -> Result<()> {
     }
 
     println!(
-        "Reinstalling {} package(s): {}\n",
-        packages_to_reinstall.len(),
-        packages_to_reinstall.join(", ")
+        "Reinstalling {} package(s)\n",
+        packages_to_reinstall.len()
     );
 
-    // Reinstall all packages in parallel (with concurrency limit)
+    // Batch packages to reduce lock contention while maintaining parallelism
+    // Each batch runs `brew reinstall pkg1 pkg2 pkg3...` which Homebrew handles efficiently
+    const BATCH_SIZE: usize = 10;
+    let batches: Vec<Vec<String>> = packages_to_reinstall
+        .chunks(BATCH_SIZE)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
     println!(
-        "Reinstalling packages with {} concurrent operations...",
+        "Reinstalling in {} batch(es) with {} concurrent operations...",
+        batches.len(),
         MAX_CONCURRENT_OPERATIONS
     );
 
@@ -422,38 +450,36 @@ async fn reinstall(all: bool, packages: Vec<String>) -> Result<()> {
             .progress_chars("#>-")
     );
 
-    let reinstall_tasks: Vec<_> = packages_to_reinstall
-        .iter()
-        .map(|package| reinstall_package(package, semaphore.clone(), pb.clone()))
+    let reinstall_tasks: Vec<_> = batches
+        .into_iter()
+        .map(|batch| reinstall_package_batch(batch, semaphore.clone(), pb.clone()))
         .collect();
 
     // Wait for all reinstalls to complete
     let results = futures::future::join_all(reinstall_tasks).await;
     pb.finish_with_message("Reinstallation complete");
 
-    // Check for any failures
+    // Collect failed packages
     let mut failed = Vec::new();
-    let mut succeeded = Vec::new();
-    for (i, result) in results.iter().enumerate() {
-        if let Err(e) = result {
-            eprintln!("✗ Error: {}", e);
-            failed.push(&packages_to_reinstall[i]);
-        } else {
-            succeeded.push(&packages_to_reinstall[i]);
+    for result in results {
+        match result {
+            Ok(failed_packages) => failed.extend(failed_packages),
+            Err(e) => eprintln!("✗ Error: {}", e),
         }
     }
 
+    let succeeded = packages_to_reinstall.len() - failed.len();
+
     println!();
-    if !succeeded.is_empty() {
-        println!("✓ Successfully reinstalled {} package(s)", succeeded.len());
+    if succeeded > 0 {
+        println!("✓ Successfully reinstalled {} package(s)", succeeded);
     }
 
     if !failed.is_empty() {
-        let failed_names: Vec<&str> = failed.iter().map(|s| s.as_str()).collect();
         eprintln!(
             "✗ {} package(s) failed to reinstall: {}",
             failed.len(),
-            failed_names.join(", ")
+            failed.join(", ")
         );
         return Err(anyhow!("Some packages failed to reinstall"));
     }
