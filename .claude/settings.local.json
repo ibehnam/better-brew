@@ -11,7 +11,12 @@
       "Bash(cargo publish:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(cargo package:*)"
+      "Bash(cargo package:*)",
+      "Bash(git push)",
+      "Bash(git rm:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo run:*)",
+      "Bash(git tag:*)"
     ],
     "deny": [],
     "ask": []

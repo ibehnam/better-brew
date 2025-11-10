@@ -1,0 +1,5 @@
+/Users/behnam/Downloads/LLM/better_brew/target/package/better_brew-0.3.0/target/debug/build/serde_core-e9420af8ac7b21f7/build_script_build-e9420af8ac7b21f7: /Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/build.rs
+
+/Users/behnam/Downloads/LLM/better_brew/target/package/better_brew-0.3.0/target/debug/build/serde_core-e9420af8ac7b21f7/build_script_build-e9420af8ac7b21f7.d: /Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/build.rs
+
+/Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/build.rs:
