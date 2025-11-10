@@ -1,8 +1,14 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
+use tokio::sync::Semaphore;
+
+/// Maximum number of concurrent package operations to prevent CPU overload
+const MAX_CONCURRENT_OPERATIONS: usize = 4;
 
 /// Better Brew - Parallel Homebrew package manager
 #[derive(Parser)]
@@ -137,7 +143,11 @@ async fn get_installed_packages() -> Result<Vec<String>> {
 }
 
 /// Fetch a single package in the background
-async fn fetch_package(package: &str) -> Result<()> {
+async fn fetch_package(package: &str, semaphore: Arc<Semaphore>, pb: ProgressBar) -> Result<()> {
+    let _permit = semaphore.acquire().await.unwrap();
+
+    pb.set_message(format!("Fetching {}", package));
+
     let output = Command::new("brew")
         .args(["fetch", package])
         .output()
@@ -145,16 +155,23 @@ async fn fetch_package(package: &str) -> Result<()> {
         .context(format!("Failed to fetch package: {}", package))?;
 
     if output.status.success() {
-        println!("✓ Fetched: {}", package);
+        pb.println(format!("✓ Fetched: {}", package));
+        pb.inc(1);
         Ok(())
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);
+        pb.println(format!("✗ Failed to fetch: {}", package));
+        pb.inc(1);
         Err(anyhow!("Failed to fetch {}: {}", package, error_msg))
     }
 }
 
 /// Install a single package
-async fn install_package(package: &str) -> Result<()> {
+async fn install_package(package: &str, semaphore: Arc<Semaphore>, pb: ProgressBar) -> Result<()> {
+    let _permit = semaphore.acquire().await.unwrap();
+
+    pb.set_message(format!("Installing {}", package));
+
     let output = Command::new("brew")
         .args(["install", package])
         .output()
@@ -162,16 +179,27 @@ async fn install_package(package: &str) -> Result<()> {
         .context(format!("Failed to install package: {}", package))?;
 
     if output.status.success() {
-        println!("✓ Installed: {}", package);
+        pb.println(format!("✓ Installed: {}", package));
+        pb.inc(1);
         Ok(())
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);
+        pb.println(format!("✗ Failed to install: {}", package));
+        pb.inc(1);
         Err(anyhow!("Failed to install {}: {}", package, error_msg))
     }
 }
 
 /// Reinstall a single package
-async fn reinstall_package(package: &str) -> Result<()> {
+async fn reinstall_package(
+    package: &str,
+    semaphore: Arc<Semaphore>,
+    pb: ProgressBar,
+) -> Result<()> {
+    let _permit = semaphore.acquire().await.unwrap();
+
+    pb.set_message(format!("Reinstalling {}", package));
+
     let output = Command::new("brew")
         .args(["reinstall", package])
         .output()
@@ -179,10 +207,13 @@ async fn reinstall_package(package: &str) -> Result<()> {
         .context(format!("Failed to reinstall package: {}", package))?;
 
     if output.status.success() {
-        println!("✓ Reinstalled: {}", package);
+        pb.println(format!("✓ Reinstalled: {}", package));
+        pb.inc(1);
         Ok(())
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);
+        pb.println(format!("✗ Failed to reinstall: {}", package));
+        pb.inc(1);
         Err(anyhow!("Failed to reinstall {}: {}", package, error_msg))
     }
 }
@@ -225,15 +256,29 @@ async fn upgrade() -> Result<()> {
         packages.join(", ")
     );
 
-    // Step 3: Fetch all packages in parallel
-    println!("Fetching packages in parallel...");
+    // Step 3: Fetch all packages in parallel (with concurrency limit)
+    println!(
+        "Fetching packages with {} concurrent operations...",
+        MAX_CONCURRENT_OPERATIONS
+    );
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_OPERATIONS));
+    let pb = ProgressBar::new(packages.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+
     let fetch_tasks: Vec<_> = packages
         .iter()
-        .map(|package| fetch_package(package))
+        .map(|package| fetch_package(package, semaphore.clone(), pb.clone()))
         .collect();
 
     // Wait for all fetches to complete
     let results = futures::future::join_all(fetch_tasks).await;
+    pb.finish_with_message("Fetching complete");
 
     // Check for any failures
     let mut failed = Vec::new();
@@ -278,15 +323,29 @@ async fn install(packages: Vec<String>) -> Result<()> {
         packages.join(", ")
     );
 
-    // Install all packages in parallel
-    println!("Installing packages in parallel...");
+    // Install all packages in parallel (with concurrency limit)
+    println!(
+        "Installing packages with {} concurrent operations...",
+        MAX_CONCURRENT_OPERATIONS
+    );
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_OPERATIONS));
+    let pb = ProgressBar::new(packages.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+
     let install_tasks: Vec<_> = packages
         .iter()
-        .map(|package| install_package(package))
+        .map(|package| install_package(package, semaphore.clone(), pb.clone()))
         .collect();
 
     // Wait for all installs to complete
     let results = futures::future::join_all(install_tasks).await;
+    pb.finish_with_message("Installation complete");
 
     // Check for any failures
     let mut failed = Vec::new();
@@ -348,15 +407,29 @@ async fn reinstall(all: bool, packages: Vec<String>) -> Result<()> {
         packages_to_reinstall.join(", ")
     );
 
-    // Reinstall all packages in parallel
-    println!("Reinstalling packages in parallel...");
+    // Reinstall all packages in parallel (with concurrency limit)
+    println!(
+        "Reinstalling packages with {} concurrent operations...",
+        MAX_CONCURRENT_OPERATIONS
+    );
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_OPERATIONS));
+    let pb = ProgressBar::new(packages_to_reinstall.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+
     let reinstall_tasks: Vec<_> = packages_to_reinstall
         .iter()
-        .map(|package| reinstall_package(package))
+        .map(|package| reinstall_package(package, semaphore.clone(), pb.clone()))
         .collect();
 
     // Wait for all reinstalls to complete
     let results = futures::future::join_all(reinstall_tasks).await;
+    pb.finish_with_message("Reinstallation complete");
 
     // Check for any failures
     let mut failed = Vec::new();
