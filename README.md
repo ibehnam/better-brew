@@ -1,10 +1,21 @@
 # 🍻 Better Brew
 
-A faster Homebrew experience with parallel package downloads and upgrades.
+A faster, smarter Homebrew experience with parallel package operations, intelligent concurrency control, and real-time progress tracking.
 
 ## Why Better Brew?
 
-Homebrew's `brew upgrade` fetches packages sequentially, which can be slow when updating multiple packages. Better Brew (`bbrew`) speeds this up by downloading all packages in parallel before installing them.
+Homebrew's default commands process packages sequentially, which can be slow when managing multiple packages. Better Brew (`bbrew`) speeds this up by:
+- **Parallel Operations**: Downloads and installs packages concurrently
+- **Smart Concurrency**: Limits concurrent operations to prevent CPU overload
+- **Visual Feedback**: Real-time progress bars with ETA for all operations
+
+## Features
+
+✨ **Parallel Package Operations** - Install, upgrade, and reinstall multiple packages simultaneously
+⚡ **Concurrency Control** - Intelligent limiting (max 4 concurrent ops) prevents system slowdown
+📊 **Progress Tracking** - Beautiful progress bars with elapsed time and ETA
+🎯 **Drop-in Replacement** - Use `bbrew` instead of `brew` for faster operations
+🔒 **Safe & Reliable** - Individual package failures don't stop the entire operation
 
 ## Installation
 
@@ -20,7 +31,9 @@ cargo install better_brew
 bbrew update
 ```
 
-### Upgrade packages (parallel downloads)
+Updates Homebrew and package definitions.
+
+### Upgrade All Outdated Packages
 
 ```bash
 bbrew upgrade
@@ -29,8 +42,44 @@ bbrew upgrade
 This will:
 1. Update package definitions
 2. Check for outdated packages
-3. Fetch all packages **in parallel** (the fast part!)
+3. Fetch all packages **in parallel** with progress tracking
 4. Install the upgrades
+
+### Install Packages in Parallel
+
+```bash
+bbrew install wget curl jq ripgrep fd bat
+```
+
+Installs multiple packages concurrently with real-time progress.
+
+### Reinstall Packages
+
+```bash
+# Reinstall specific packages
+bbrew reinstall node python rust
+
+# Reinstall ALL installed packages (useful for troubleshooting)
+bbrew reinstall --all
+```
+
+## Example Output
+
+```
+=== Better Brew Install ===
+
+Installing 4 package(s): wget, curl, jq, ripgrep
+
+Installing packages with 4 concurrent operations...
+✓ Installed: wget
+✓ Installed: curl
+🔄 [00:00:15] [####>-----] 3/4 (00:00:05) Installing ripgrep
+✓ Installed: jq
+
+✓ Successfully installed 4 package(s)
+
+✓ Install complete!
+```
 
 ## Requirements
 
@@ -40,19 +89,44 @@ This will:
 
 ## How it works
 
-Instead of:
+### Traditional Sequential Approach
 ```
-brew fetch package1 → brew fetch package2 → brew fetch package3 → brew upgrade
-```
-
-Better Brew does:
-```
-brew fetch package1 ┐
-brew fetch package2 ├→ (all in parallel) → brew upgrade
-brew fetch package3 ┘
+brew install pkg1 → brew install pkg2 → brew install pkg3 → brew install pkg4
+Total time: Sum of all operations
 ```
 
-This significantly reduces wait time when upgrading multiple packages.
+### Better Brew Parallel Approach (v0.3.0)
+```
+brew install pkg1 ┐
+brew install pkg2 ├─→ (max 4 concurrent)
+brew install pkg3 │   + progress tracking
+brew install pkg4 ┘
+
+Total time: ~Longest operation × (total_packages ÷ 4)
+```
+
+**Key Features**:
+- **Concurrency Limiting**: Maximum 4 concurrent operations prevents CPU overload
+- **Progress Tracking**: Real-time progress bars show what's happening
+- **Smart Resource Management**: Balances speed with system stability
+
+This significantly reduces wait time when managing multiple packages while keeping your system responsive.
+
+## Version History
+
+### v0.3.0 (Latest)
+- ✨ Added real-time progress bars with ETA
+- ⚡ Implemented concurrency limiting (max 4 concurrent operations)
+- 🎯 Prevents CPU overload from too many simultaneous brew processes
+- 📊 Better visual feedback during operations
+
+### v0.2.0
+- Added `install` command for parallel package installation
+- Added `reinstall` command with `--all` flag support
+- Parallel execution for all package operations
+
+### v0.1.0
+- Initial release with parallel `upgrade` command
 
 ## License
 
