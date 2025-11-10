@@ -61,28 +61,27 @@
 ```toml
 [package]
 name = "better_brew"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.70"
 
 [dependencies]
 # Core dependencies
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+futures = "0.3"
 
 [dev-dependencies]
-proptest = "1.0"
-criterion = "0.5"
+proptest = "1.4"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-
-[[bench]]
-name = "benchmarks"
-harness = false
+strip = true
 ```
 
 ### Concurrent Build Commands
@@ -605,9 +604,179 @@ jobs:
 
 ---
 
-## Project-Specific Notes
+## Project-Specific Notes: Better Brew
 
-*Add project-specific configuration, architecture decisions, and team conventions here.*
+### Project Overview
+**Better Brew** (`bbrew`) is a parallel Homebrew package manager that speeds up package operations by executing them concurrently.
+
+**Current Version**: 0.2.0
+**Binary Name**: `bbrew`
+**Published**: crates.io
+**Repository**: https://github.com/ibehnam/better_brew
+
+### Architecture
+
+**Single-File Design**: The entire application is contained in `src/main.rs` for simplicity and fast compilation.
+
+**Key Components**:
+1. **CLI Layer**: Clap-based command parsing with subcommands
+2. **Async Runtime**: Tokio multi-threaded runtime for concurrent operations
+3. **Package Management**: Wrapper functions around `brew` commands
+4. **Parallel Execution**: `futures::join_all` for concurrent package operations
+
+### Available Commands
+
+```bash
+# Update Homebrew definitions
+bbrew update
+
+# Upgrade outdated packages (with parallel download)
+bbrew upgrade
+
+# Install packages in parallel (v0.2.0+)
+bbrew install wget curl jq ripgrep
+
+# Reinstall specific packages in parallel (v0.2.0+)
+bbrew reinstall node python
+
+# Reinstall ALL installed packages in parallel (v0.2.0+)
+bbrew reinstall --all
+```
+
+### Parallel Execution Pattern
+
+All package operations use the same concurrency pattern:
+
+```rust
+// Example: Parallel package installation
+let install_tasks: Vec<_> = packages
+    .iter()
+    .map(|package| install_package(package))
+    .collect();
+
+// Wait for all installs to complete
+let results = futures::future::join_all(install_tasks).await;
+
+// Check for any failures
+for (i, result) in results.iter().enumerate() {
+    if let Err(e) = result {
+        eprintln!("✗ Error: {}", e);
+        failed.push(&packages[i]);
+    }
+}
+```
+
+### Performance Benefits
+
+**Traditional Sequential Approach**:
+```
+brew install package1  # Wait for download + install
+brew install package2  # Wait for download + install
+brew install package3  # Wait for download + install
+Total time: Sum of all operations
+```
+
+**Better Brew Parallel Approach**:
+```
+All packages download simultaneously
+Install in parallel (where safe)
+Total time: Longest single operation + overhead
+```
+
+### Command Examples
+
+```bash
+# Setting up a new Mac
+bbrew reinstall --all  # Reinstall all packages in parallel
+
+# Installing development tools
+bbrew install git node rust go python
+
+# Updating and upgrading
+bbrew update && bbrew upgrade
+
+# Selective reinstalls
+bbrew reinstall $(brew list | grep python)
+```
+
+### Implementation Details
+
+**Error Handling**:
+- Individual package failures don't halt overall operation
+- Failed packages are collected and reported at the end
+- Clear success/failure indicators (✓/✗) for each package
+
+**Brew Integration**:
+- `update`: Runs `brew update` directly
+- `upgrade`: Fetches packages in parallel, then runs `brew upgrade`
+- `install`: Runs `brew install` for each package concurrently
+- `reinstall`: Runs `brew reinstall` for each package concurrently
+
+**Package Discovery**:
+- Outdated packages: `brew outdated --json` (parsed via serde)
+- Installed packages: `brew list --formula -1` (plain text parsing)
+
+### Development Workflow
+
+```bash
+# Standard build and test cycle (ALWAYS batched)
+cargo build --release && \
+cargo test --all-features && \
+cargo clippy -- -D warnings && \
+cargo fmt --check
+
+# Running the tool locally
+cargo run --release -- install wget
+
+# Publishing updates
+# 1. Update version in Cargo.toml
+# 2. Commit changes
+# 3. Create git tag (e.g., v0.2.0)
+# 4. cargo publish
+```
+
+### Future Enhancements
+
+Potential areas for improvement:
+- Support for cask operations (currently formulae only)
+- Configurable concurrency limits
+- Progress bars for long-running operations
+- Dry-run mode
+- Package dependency graph analysis
+- Integration with `brew bundle`
+
+### Testing Considerations
+
+**Unit Tests**: Focus on JSON parsing and data structures
+**Integration Tests**: Require Homebrew to be installed
+**Manual Testing**: Test with actual packages on macOS
+
+```rust
+#[tokio::test]
+async fn test_homebrew_check() {
+    let result = check_homebrew().await;
+    // Verifies Homebrew is accessible
+}
+
+#[test]
+fn test_package_parsing() {
+    // Verifies JSON deserialization for brew outdated
+}
+```
+
+### Performance Notes
+
+- **I/O-Bound**: Package downloads are network-limited, perfect for async
+- **CPU Usage**: Minimal - mostly waiting on network and disk I/O
+- **Memory**: Lightweight - only stores package lists and results
+- **Tokio Runtime**: Default worker thread count (# of CPU cores)
+
+### Security Considerations
+
+- No network requests beyond calling `brew`
+- No credential storage or handling
+- Relies on Homebrew's security model
+- Dependencies audited via `cargo audit`
 
 ---
 
