@@ -1,0 +1,7 @@
+/Users/behnam/Downloads/LLM/better_brew/target/release/deps/libfutures_sink-9ed43eebf22bf847.rmeta: /Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.31/src/lib.rs
+
+/Users/behnam/Downloads/LLM/better_brew/target/release/deps/libfutures_sink-9ed43eebf22bf847.rlib: /Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.31/src/lib.rs
+
+/Users/behnam/Downloads/LLM/better_brew/target/release/deps/futures_sink-9ed43eebf22bf847.d: /Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.31/src/lib.rs
+
+/Users/behnam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.31/src/lib.rs:
