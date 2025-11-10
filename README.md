@@ -1,4 +1,4 @@
-# Better Brew
+# 🍻 Better Brew
 
 A faster Homebrew experience with parallel package downloads and upgrades.
 
